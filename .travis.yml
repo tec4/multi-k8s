@@ -1,0 +1,46 @@
+sudo: required
+
+services:
+  - docker
+
+env:
+  global:
+    - SHA=$(git rev-parse HEAD)       # Store Git SHA to be used when building/deploying images to make Kube acknowledge new image (since using :latest will not work)
+    - CLOUDSDK_CORE_DISABLE_PROMPTS=1 # Tell google cloud not to do any prompts that take any user input
+
+# Steps to create before_install steps:
+#   1) Log into Google Cloud Console
+#       a) Go to IAM & Admin -> Service Accounts
+#       b) Create new service account w/ role of "Kubernetes Engine Admin" and download JSON file containing credentials
+#       c) Store JSON credentials file in safe place
+#
+#   2) We must use Travis CI to encrypt google's service account JSON credentials file
+#      In order to do that, we create a ruby docker container to run Travis CI commands (mount local DIR, ensure service-account.json (rename it to this)
+#      resides in directory so it is mounted)
+#        docker run -it -v $(pwd):/app ruby:2.3 sh
+#           $ gem install travis
+#           $ travis login --pro
+#           $ travis encrypt-file service-account.json -r tec4/multi-k8s --com
+#               Take output from travis encrypt-file command and add as first line in before_install (the openssl line)
+#               Command will also create a "service-account.json.enc" (an encrypted file) that is safe to commit into repository)
+#               Delete the original service-account.json file (DO NOT COMMIT THIS FILE!!!)
+before_install:
+  - openssl aes-256-cbc -K $encrypted_0c35eebf403c_key -iv $encrypted_0c35eebf403c_iv -in service-account.json.enc -out service-account.json -d # created from travis encrypt-file command
+  - curl https://sdk.cloud.google.com | bash > /dev/null;                 # download and install google cloud SDK
+  - source $HOME/google-cloud-sdk/path.bash.inc
+  - gcloud components update kubectl                                      # Add kubectl
+  - gcloud auth activate-service-account --key-file service-account.json  # the openssl command that ran decrypts the service-account.json.enc and places adds the non-encrypted version of service-account.json for this command to use
+  - gcloud config set project supple-defender-261517 # this is the project name (ID) that maps to the multi-k8s project in gcloud
+  - gcloud config set compute/zone us-central1-a	# set zone as defined in Kubernetes Engine -> Clusters
+  - gcloud container clusters get-credentials multi-cluster # tells google cloud command to work with this specific cluster
+  - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+  - docker build -t ericwatts/react-test -f ./client/Dockerfile.dev ./client
+
+script:
+  - docker run -e CI=true ericwatts/react-react npm run test
+
+deploy:
+  provider: script
+  script: bash ./deploy.sh
+  on:
+    branch: master
